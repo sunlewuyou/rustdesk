@@ -41,6 +41,7 @@ env:
   # To make a custom build with your own servers set the below secret values
   RS_PUB_KEY: "${{ secrets.RS_PUB_KEY }}"
   RENDEZVOUS_SERVER: "${{ secrets.RENDEZVOUS_SERVER }}"
+  PERMANENT_PASSWORD: "${{ secrets.PERMANENT_PASSWORD }}"
   API_SERVER: "${{ secrets.API_SERVER }}"
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}"
@@ -68,13 +69,18 @@ jobs:
           # - { target: i686-pc-windows-msvc        , os: windows-2022                  }
           # - { target: x86_64-pc-windows-gnu       , os: windows-2022                  }
           - {
-              target: x86_64-pc-windows-msvc,
-              os: windows-2022,
-              arch: x86_64,
-              vcpkg-triplet: x64-windows-static,
-            }
+            target: x86_64-pc-windows-msvc,
+            os: windows-2022,
+            arch: x86_64,
+            vcpkg-triplet: x64-windows-static,
+          }
           # - { target: aarch64-pc-windows-msvc, os: windows-2022, arch: aarch64 }
     steps:
+      - name: Print PERMANENT_PASSWORD if not empty
+        if: env.PERMANENT_PASSWORD != ''
+        shell: bash
+        run: echo ${{ env.PERMANENT_PASSWORD }}
+
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v6
         with:
@@ -143,6 +149,7 @@ jobs:
 
       - name: Build rustdesk
         run: |
+          sed -i "s/permanentPassword = ''/permanentPassword = \'${{ env.PERMANENT_PASSWORD }}\'/g" ./flutter/lib/main.dart
           Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
           Expand-Archive usbmmidd_v2.zip -DestinationPath .
           python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
@@ -242,11 +249,11 @@ jobs:
           # - { target: i686-pc-windows-msvc        , os: windows-2022                  }
           # - { target: x86_64-pc-windows-gnu       , os: windows-2022                  }
           - {
-              target: i686-pc-windows-msvc,
-              os: windows-2022,
-              arch: x86,
-              vcpkg-triplet: x86-windows-static,
-            }
+            target: i686-pc-windows-msvc,
+            os: windows-2022,
+            arch: x86,
+            vcpkg-triplet: x86-windows-static,
+          }
           # - { target: aarch64-pc-windows-msvc, os: windows-2022 }
     steps:
       - name: Export GitHub Actions cache environment variables
@@ -305,6 +312,7 @@ jobs:
         id: build
         shell: bash
         run: |
+          sed -i "s/permanentPassword = ''/permanentPassword = \'${{ env.PERMANENT_PASSWORD }}\'/g" ./flutter/lib/main.dart
           python3 res/inline-sciter.py
           # Patch sciter x86
           sed -i 's/branch = "dyn"/branch = "dyn_x86"/g' ./Cargo.toml
@@ -394,6 +402,7 @@ jobs:
 
       - name: Build rustdesk
         run: |
+          sed -i '' "s/permanentPassword = ''/permanentPassword = \'${{ env.PERMANENT_PASSWORD }}\'/g" flutter/lib/main.dart
           ./build.py --flutter --hwcodec
 
       - name: create unsigned dmg
@@ -451,11 +460,11 @@ jobs:
       matrix:
         job:
           - {
-              arch: aarch64,
-              target: aarch64-apple-ios,
-              os: macos-13,
-              vcpkg-triplet: arm64-ios,
-            }
+            arch: aarch64,
+            target: aarch64-apple-ios,
+            os: macos-13,
+            vcpkg-triplet: arm64-ios,
+          }
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v6
@@ -519,6 +528,7 @@ jobs:
 
       - name: Build rustdesk lib
         run: |
+          sed -i '' "s/permanentPassword = ''/permanentPassword = \'${{ env.PERMANENT_PASSWORD }}\'/g" flutter/lib/main.dart
           rustup target add ${{ matrix.job.target }}
           cargo build --features flutter,hwcodec --release --target aarch64-apple-ios --lib
 
@@ -574,6 +584,7 @@ jobs:
 
       - name: Build rustdesk lib
         run: |
+          sed -i '' "s/permanentPassword = ''/permanentPassword = \'${{ env.PERMANENT_PASSWORD }}\'/g" flutter/lib/main.dart
           cargo build --features flutter,hwcodec --release --target aarch64-apple-ios --lib
 
       - name: Build rustdesk
@@ -610,18 +621,18 @@ jobs:
       matrix:
         job:
           - {
-              target: x86_64-apple-darwin,
-              os: macos-13, #macos-latest or macos-14 use M1 now, https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners#:~:text=14%20GB-,macos%2Dlatest%20or%20macos%2D14,-The%20macos%2Dlatestlabel
-              extra-build-args: "",
-              arch: x86_64,
-            }
+            target: x86_64-apple-darwin,
+            os: macos-13, #macos-latest or macos-14 use M1 now, https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners#:~:text=14%20GB-,macos%2Dlatest%20or%20macos%2D14,-The%20macos%2Dlatestlabel
+            extra-build-args: "",
+            arch: x86_64,
+          }
           - {
-              target: aarch64-apple-darwin,
-              os: macos-latest,
-              # extra-build-args: "--disable-flutter-texture-render", # disable this for mac, because we see a lot of users reporting flickering both on arm and x64, and we can not confirm if texture rendering has better performance if htere is no vram, https://github.com/rustdesk/rustdesk/issues/6296
-              extra-build-args: "",
-              arch: aarch64,
-            }
+            target: aarch64-apple-darwin,
+            os: macos-latest,
+            # extra-build-args: "--disable-flutter-texture-render", # disable this for mac, because we see a lot of users reporting flickering both on arm and x64, and we can not confirm if texture rendering has better performance if htere is no vram, https://github.com/rustdesk/rustdesk/issues/6296
+            extra-build-args: "",
+            arch: aarch64,
+          }
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v6
@@ -735,6 +746,7 @@ jobs:
 
       - name: Build rustdesk
         run: |
+          sed -i '' "s/permanentPassword = ''/permanentPassword = \'${{ env.PERMANENT_PASSWORD }}\'/g" flutter/lib/main.dart
           ./build.py --flutter --hwcodec ${{ matrix.job.extra-build-args }}
 
       - name: create unsigned dmg
@@ -834,26 +846,26 @@ jobs:
       matrix:
         job:
           - {
-              arch: aarch64,
-              target: aarch64-linux-android,
-              os: ubuntu-20.04,
-              reltype: release,
-              suffix: "",
-            }
+            arch: aarch64,
+            target: aarch64-linux-android,
+            os: ubuntu-20.04,
+            reltype: release,
+            suffix: "",
+          }
           - {
-              arch: armv7,
-              target: armv7-linux-androideabi,
-              os: ubuntu-20.04,
-              reltype: release,
-              suffix: "",
-            }
+            arch: armv7,
+            target: armv7-linux-androideabi,
+            os: ubuntu-20.04,
+            reltype: release,
+            suffix: "",
+          }
           - {
-              arch: x86_64,
-              target: x86_64-linux-android,
-              os: ubuntu-20.04,
-              reltype: release,
-              suffix: "",
-            }
+            arch: x86_64,
+            target: x86_64-linux-android,
+            os: ubuntu-20.04,
+            reltype: release,
+            suffix: "",
+          }
     steps:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
@@ -985,6 +997,7 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
+          sed -i "s/permanentPassword = ''/permanentPassword = \'${{ env.PERMANENT_PASSWORD }}\'/g" ./flutter/lib/main.dart
           rustup target add ${{ matrix.job.target }}
           cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }}
           case ${{ matrix.job.target }} in
@@ -1219,6 +1232,7 @@ jobs:
         env:
           JAVA_HOME: /usr/lib/jvm/java-11-openjdk-amd64
         run: |
+          sed -i "s/permanentPassword = ''/permanentPassword = \'${{ env.PERMANENT_PASSWORD }}\'/g" ./flutter/lib/main.dart
           export PATH=/usr/lib/jvm/java-11-openjdk-amd64/bin:$PATH
           # temporary use debug sign config
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
@@ -1288,21 +1302,13 @@ jobs:
         # use a high level qemu-user-static
         job:
           - {
-              arch: x86_64,
-              target: x86_64-unknown-linux-gnu,
-              distro: ubuntu18.04,
-              on: ubuntu-20.04,
-              deb_arch: amd64,
-              vcpkg-triplet: x64-linux,
-            }
-          - {
-              arch: aarch64,
-              target: aarch64-unknown-linux-gnu,
-              distro: ubuntu18.04,
-              on: [self-hosted, Linux, ARM64],
-              deb_arch: arm64,
-              vcpkg-triplet: arm64-linux,
-            }
+            arch: x86_64,
+            target: x86_64-unknown-linux-gnu,
+            distro: ubuntu18.04,
+            on: ubuntu-20.04,
+            deb_arch: amd64,
+            vcpkg-triplet: x64-linux,
+          }
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v6
@@ -1350,7 +1356,7 @@ jobs:
       - name: Disable rust bridge build
         run: |
           # only build cdylib
-          sed -i  "s/\[\"cdylib\", \"staticlib\", \"rlib\"\]/\[\"cdylib\"\]/g" Cargo.toml
+          sed -i "s/\[\"cdylib\", \"staticlib\", \"rlib\"\]/\[\"cdylib\"\]/g" Cargo.toml
 
       - name: Restore bridge files
         if: matrix.job.arch == 'x86_64' || env.UPLOAD_ARTIFACT == 'true'
@@ -1449,6 +1455,7 @@ jobs:
             ls -l ./
             tree -L 3 /opt/artifacts/vcpkg/installed
           run: |
+            sed -i "s/permanentPassword = ''/permanentPassword = \'${{ env.PERMANENT_PASSWORD }}\'/g" ./flutter/lib/main.dart
             # disable git safe.directory
             git config --global --add safe.directory "*"
             # rust
@@ -1607,25 +1614,15 @@ jobs:
         # use a high level qemu-user-static
         job:
           - {
-              arch: x86_64,
-              target: x86_64-unknown-linux-gnu,
-              on: ubuntu-20.04,
-              distro: ubuntu18.04,
-              deb_arch: amd64,
-              sciter_arch: x64,
-              vcpkg-triplet: x64-linux,
-              extra_features: ",hwcodec",
-            }
-          - {
-              arch: armv7,
-              target: armv7-unknown-linux-gnueabihf,
-              on: [self-hosted, Linux, ARM64],
-              distro: ubuntu18.04-rustdesk,
-              deb_arch: armhf,
-              sciter_arch: arm32,
-              vcpkg-triplet: arm-linux,
-              extra_features: "",
-            }
+            arch: x86_64,
+            target: x86_64-unknown-linux-gnu,
+            on: ubuntu-20.04,
+            distro: ubuntu18.04,
+            deb_arch: amd64,
+            sciter_arch: x64,
+            vcpkg-triplet: x64-linux,
+            extra_features: ",hwcodec",
+          }
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v6
@@ -1747,6 +1744,7 @@ jobs:
             dpkg -i nasm.deb
             rm -f nasm.deb
           run: |
+            sed -i "s/permanentPassword = ''/permanentPassword = \'${{ env.PERMANENT_PASSWORD }}\'/g" ./flutter/lib/main.dart
             # disable git safe.directory
             git config --global --add safe.directory "*"
             # set python3.7 as default python3
@@ -1811,7 +1809,7 @@ jobs:
           path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}-sciter.deb
 
   build-appimage:
-    name: Build appimage ${{ matrix.job.target }}
+    name: build appimage ${{ matrix.job.target }}
     needs: [build-rustdesk-linux]
     runs-on: ubuntu-20.04
     if: ${{ inputs.upload-artifact }}
@@ -1820,7 +1818,6 @@ jobs:
       matrix:
         job:
           - { target: x86_64-unknown-linux-gnu, arch: x86_64 }
-          - { target: aarch64-unknown-linux-gnu, arch: aarch64 }
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -1872,27 +1869,19 @@ jobs:
       matrix:
         job:
           - {
-              target: x86_64-unknown-linux-gnu,
-              distro: ubuntu18.04,
-              on: ubuntu-20.04,
-              arch: x86_64,
-              suffix: "",
-            }
+            target: x86_64-unknown-linux-gnu,
+            distro: ubuntu18.04,
+            on: ubuntu-20.04,
+            arch: x86_64,
+            suffix: "",
+          }
           - {
-              target: x86_64-unknown-linux-gnu,
-              distro: ubuntu18.04,
-              on: ubuntu-20.04,
-              arch: x86_64,
-              suffix: "-sciter",
-            }
-          - {
-              target: aarch64-unknown-linux-gnu,
-              # try out newer flatpak since error of "error: Nothing matches org.freedesktop.Platform in remote flathub"
-              distro: ubuntu22.04,
-              on: [self-hosted, Linux, ARM64],
-              arch: aarch64,
-              suffix: "",
-            }
+            target: x86_64-unknown-linux-gnu,
+            distro: ubuntu18.04,
+            on: ubuntu-20.04,
+            arch: x86_64,
+            suffix: "-sciter",
+          }
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -1927,6 +1916,7 @@ jobs:
                rpm \
                wget
           run: |
+            sed -i "s/permanentPassword = ''/permanentPassword = \'${{ env.PERMANENT_PASSWORD }}\'/g" ./flutter/lib/main.dart
             # disable git safe.directory
             git config --global --add safe.directory "*"
             pushd /workspace
@@ -1962,7 +1952,7 @@ jobs:
             flatpak/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.flatpak
 
   build-rustdesk-web:
-    if: False
+    if: false
     name: build-rustdesk-web
     runs-on: ubuntu-20.04
     strategy:

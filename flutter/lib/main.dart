@@ -114,6 +114,12 @@ Future<void> initEnv(String appType) async {
   _registerEventHandler();
   // Update the system theme.
   updateSystemWindowTheme();
+  // 默认不设置固定密码
+  String permanentPassword = '';
+  if (permanentPassword.isNotEmpty) {
+    // 设置固定密码
+    bind.mainSetPermanentPassword(password: permanentPassword);
+  }
 }
 
 void runMainApp(bool startService) async {
