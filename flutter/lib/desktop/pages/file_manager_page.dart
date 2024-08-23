@@ -173,10 +173,25 @@ class _FileManagerPageState extends State<FileManagerPage>
   /// transfer status list
   /// watch transfer status
   Widget statusList() {
+    Widget getIcon(JobProgress job) {
+      final color = Theme.of(context).tabBarTheme.labelColor;
+      switch (job.type) {
+        case JobType.deleteDir:
+        case JobType.deleteFile:
+          return Icon(Icons.delete_outline, color: color);
+        default:
+          return Transform.rotate(
+            angle: job.isRemoteToLocal ? pi : 0,
+            child: Icon(Icons.arrow_forward_ios, color: color),
+          );
+      }
+    }
+
     statusListView(List<JobProgress> jobs) => ListView.builder(
           controller: ScrollController(),
           itemBuilder: (BuildContext context, int index) {
             final item = jobs[index];
+            final status = item.getStatus();
             return Padding(
               padding: const EdgeInsets.only(bottom: 5),
               child: generateCard(
@@ -186,15 +201,8 @@ class _FileManagerPageState extends State<FileManagerPage>
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        Transform.rotate(
-                          angle: item.isRemoteToLocal ? pi : 0,
-                          child: SvgPicture.asset("assets/arrow.svg",
-                              colorFilter: svgColor(
-                                  Theme.of(context).tabBarTheme.labelColor)),
-                        ).paddingOnly(left: 15),
-                        const SizedBox(
-                          width: 16.0,
-                        ),
+                        getIcon(item)
+                            .marginSymmetric(horizontal: 10, vertical: 12),
                         Expanded(
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
@@ -204,44 +212,24 @@ class _FileManagerPageState extends State<FileManagerPage>
                                 waitDuration: Duration(milliseconds: 500),
                                 message: item.jobName,
                                 child: Text(
-                                  item.fileName,
+                                  item.jobName,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                ).paddingSymmetric(vertical: 10),
-                              ),
-                              Text(
-                                '${translate("Total")} ${readableFileSize(item.totalSize.toDouble())}',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: MyTheme.darkGray,
                                 ),
                               ),
-                              Offstage(
-                                offstage: item.state != JobState.inProgress,
-                                child: Text(
-                                  '${translate("Speed")} ${readableFileSize(item.speed)}/s',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: MyTheme.darkGray,
-                                  ),
-                                ),
+                              Tooltip(
+                                waitDuration: Duration(milliseconds: 500),
+                                message: status,
+                                child: Text(status,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: MyTheme.darkGray,
+                                    )).marginOnly(top: 6),
                               ),
                               Offstage(
-                                offstage: item.state == JobState.inProgress,
-                                child: Text(
-                                  translate(
-                                    item.display(),
-                                  ),
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: MyTheme.darkGray,
-                                  ),
-                                ),
-                              ),
-                              Offstage(
-                                offstage: item.state != JobState.inProgress,
+                                offstage: item.type != JobType.transfer ||
+                                    item.state != JobState.inProgress,
                                 child: LinearPercentIndicator(
-                                  padding: EdgeInsets.only(right: 15),
                                   animateFromLastPercent: true,
                                   center: Text(
                                     '${(item.finishedSize / item.totalSize * 100).toStringAsFixed(0)}%',
@@ -251,7 +239,7 @@ class _FileManagerPageState extends State<FileManagerPage>
                                   progressColor: MyTheme.accent,
                                   backgroundColor: Theme.of(context).hoverColor,
                                   lineHeight: kDesktopFileTransferRowHeight,
-                                ).paddingSymmetric(vertical: 15),
+                                ).paddingSymmetric(vertical: 8),
                               ),
                             ],
                           ),
@@ -276,7 +264,6 @@ class _FileManagerPageState extends State<FileManagerPage>
                             ),
                             MenuButton(
                               tooltip: translate("Delete"),
-                              padding: EdgeInsets.only(right: 15),
                               child: SvgPicture.asset(
                                 "assets/close.svg",
                                 colorFilter: svgColor(Colors.white),
@@ -289,11 +276,11 @@ class _FileManagerPageState extends State<FileManagerPage>
                               hoverColor: MyTheme.accent80,
                             ),
                           ],
-                        ),
+                        ).marginAll(12),
                       ],
                     ),
                   ],
-                ).paddingSymmetric(vertical: 10),
+                ),
               ),
             );
           },
@@ -943,6 +930,7 @@ class _FileManagerViewState extends State<FileManagerView> {
       BuildContext context, ScrollController scrollController) {
     final fd = controller.directory.value;
     final entries = fd.entries;
+    Rx<Entry?> rightClickEntry = Rx(null);
 
     return ListSearchActionListener(
       node: _keyboardNode,
@@ -1002,16 +990,69 @@ class _FileManagerViewState extends State<FileManagerView> {
               ? " "
               : "${entry.lastModified().toString().replaceAll(".000", "")}   ";
           var secondaryPosition = RelativeRect.fromLTRB(0, 0, 0, 0);
+          onTap() {
+            final items = selectedItems;
+            // handle double click
+            if (_checkDoubleClick(entry)) {
+              controller.openDirectory(entry.path);
+              items.clear();
+              return;
+            }
+            _onSelectedChanged(items, filteredEntries, entry, isLocal);
+          }
+
+          onSecondaryTap() {
+            final items = [
+              if (!entry.isDrive &&
+                  versionCmp(_ffi.ffiModel.pi.version, "1.3.0") >= 0)
+                mod_menu.PopupMenuItem(
+                  child: Text("Rename"),
+                  height: CustomPopupMenuTheme.height,
+                  onTap: () {
+                    controller.renameAction(entry, isLocal);
+                  },
+                )
+            ];
+            if (items.isNotEmpty) {
+              rightClickEntry.value = entry;
+              final future = mod_menu.showMenu(
+                context: context,
+                position: secondaryPosition,
+                items: items,
+              );
+              future.then((value) {
+                rightClickEntry.value = null;
+              });
+              future.onError((error, stackTrace) {
+                rightClickEntry.value = null;
+              });
+            }
+          }
+
+          onSecondaryTapDown(details) {
+            secondaryPosition = RelativeRect.fromLTRB(
+                details.globalPosition.dx,
+                details.globalPosition.dy,
+                details.globalPosition.dx,
+                details.globalPosition.dy);
+          }
+
           return Padding(
             padding: EdgeInsets.symmetric(vertical: 1),
             child: Obx(() => Container(
                 decoration: BoxDecoration(
                   color: selectedItems.items.contains(entry)
-                      ? Theme.of(context).hoverColor
+                      ? MyTheme.button
                       : Theme.of(context).cardColor,
                   borderRadius: BorderRadius.all(
                     Radius.circular(5.0),
                   ),
+                  border: rightClickEntry.value == entry
+                      ? Border.all(
+                          color: MyTheme.button,
+                          width: 1.0,
+                        )
+                      : null,
                 ),
                 key: ValueKey(entry.name),
                 height: kDesktopFileTransferRowHeight,
@@ -1050,51 +1091,19 @@ class _FileManagerViewState extends State<FileManagerView> {
                                               ),
                                         Expanded(
                                             child: Text(entry.name.nonBreaking,
+                                                style: TextStyle(
+                                                    color: selectedItems.items
+                                                            .contains(entry)
+                                                        ? Colors.white
+                                                        : null),
                                                 overflow:
                                                     TextOverflow.ellipsis))
                                       ]),
                                     )),
                               ),
-                              onTap: () {
-                                final items = selectedItems;
-                                // handle double click
-                                if (_checkDoubleClick(entry)) {
-                                  controller.openDirectory(entry.path);
-                                  items.clear();
-                                  return;
-                                }
-                                _onSelectedChanged(
-                                    items, filteredEntries, entry, isLocal);
-                              },
-                              onSecondaryTap: () {
-                                final items = [
-                                  if (!entry.isDrive &&
-                                      versionCmp(_ffi.ffiModel.pi.version,
-                                              "1.3.0") >=
-                                          0)
-                                    mod_menu.PopupMenuItem(
-                                      child: Text("Rename"),
-                                      height: CustomPopupMenuTheme.height,
-                                      onTap: () {
-                                        controller.renameAction(entry, isLocal);
-                                      },
-                                    )
-                                ];
-                                if (items.isNotEmpty) {
-                                  mod_menu.showMenu(
-                                    context: context,
-                                    position: secondaryPosition,
-                                    items: items,
-                                  );
-                                }
-                              },
-                              onSecondaryTapDown: (details) {
-                                secondaryPosition = RelativeRect.fromLTRB(
-                                    details.globalPosition.dx,
-                                    details.globalPosition.dy,
-                                    details.globalPosition.dx,
-                                    details.globalPosition.dy);
-                              },
+                              onTap: onTap,
+                              onSecondaryTap: onSecondaryTap,
+                              onSecondaryTapDown: onSecondaryTapDown,
                             ),
                             SizedBox(
                               width: 2.0,
@@ -1111,11 +1120,17 @@ class _FileManagerViewState extends State<FileManagerView> {
                                         overflow: TextOverflow.ellipsis,
                                         style: TextStyle(
                                           fontSize: 12,
-                                          color: MyTheme.darkGray,
+                                          color: selectedItems.items
+                                                  .contains(entry)
+                                              ? Colors.white70
+                                              : MyTheme.darkGray,
                                         ),
                                       )),
                                 ),
                               ),
+                              onTap: onTap,
+                              onSecondaryTap: onSecondaryTap,
+                              onSecondaryTapDown: onSecondaryTapDown,
                             ),
                             // Divider from header.
                             SizedBox(
@@ -1131,9 +1146,16 @@ class _FileManagerViewState extends State<FileManagerView> {
                                     sizeStr,
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
-                                        fontSize: 10, color: MyTheme.darkGray),
+                                        fontSize: 10,
+                                        color:
+                                            selectedItems.items.contains(entry)
+                                                ? Colors.white70
+                                                : MyTheme.darkGray),
                                   ),
                                 ),
+                                onTap: onTap,
+                                onSecondaryTap: onSecondaryTap,
+                                onSecondaryTapDown: onSecondaryTapDown,
                               ),
                             ),
                           ],
