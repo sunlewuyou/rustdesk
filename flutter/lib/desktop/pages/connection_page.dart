@@ -39,7 +39,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
   double? get height => bind.isIncomingOnly() ? null : em * 3;
 
   void onUsePublicServerGuide() {
-    const url = "https://rustdesk.com/pricing.html";
+    const url = "https://rustdesk.com/pricing";
     canLaunchUrlString(url).then((can) {
       if (can) {
         launchUrlString(url);
@@ -179,6 +179,9 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
       stateGlobal.svcStatus.value = SvcStatus.notReady;
     }
     _svcIsUsingPublicServer.value = await bind.mainIsUsingPublicServer();
+    try {
+      stateGlobal.videoConnCount.value = status['video_conn_count'] as int;
+    } catch (_) {}
   }
 }
 
@@ -197,16 +200,20 @@ class _ConnectionPageState extends State<ConnectionPage>
   final _idController = IDTextEditingController();
 
   final RxBool _idInputFocused = false.obs;
+  final FocusNode _idFocusNode = FocusNode();
+  final TextEditingController _idEditingController = TextEditingController();
 
   bool isWindowMinimized = false;
-  List<Peer> peers = [];
 
-  bool isPeersLoading = false;
-  bool isPeersLoaded = false;
+  AllPeersLoader allPeersLoader = AllPeersLoader();
+
+  // https://github.com/flutter/flutter/issues/157244
+  Iterable<Peer> _autocompleteOpts = [];
 
   @override
   void initState() {
     super.initState();
+    _idFocusNode.addListener(onFocusChanged);
     if (_idController.text.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         final lastRemoteId = await bind.mainGetLastRemoteId();
@@ -225,6 +232,9 @@ class _ConnectionPageState extends State<ConnectionPage>
   void dispose() {
     _idController.dispose();
     windowManager.removeListener(this);
+    _idFocusNode.removeListener(onFocusChanged);
+    _idFocusNode.dispose();
+    _idEditingController.dispose();
     if (Get.isRegistered<IDTextEditingController>()) {
       Get.delete<IDTextEditingController>();
     }
@@ -268,6 +278,13 @@ class _ConnectionPageState extends State<ConnectionPage>
     bind.mainOnMainWindowClose();
   }
 
+  void onFocusChanged() {
+    _idInputFocused.value = _idFocusNode.hasFocus;
+    if (_idFocusNode.hasFocus && !allPeersLoader.isPeersLoading) {
+      allPeersLoader.getAllPeers(setState);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isOutgoingOnly = bind.isOutgoingOnly();
@@ -299,18 +316,6 @@ class _ConnectionPageState extends State<ConnectionPage>
     connect(context, id, isFileTransfer: isFileTransfer);
   }
 
-  Future<void> _fetchPeers() async {
-    setState(() {
-      isPeersLoading = true;
-    });
-    await Future.delayed(Duration(milliseconds: 100));
-    peers = await getAllPeers();
-    setState(() {
-      isPeersLoading = false;
-      isPeersLoaded = true;
-    });
-  }
-
   /// UI for the remote ID TextField.
   /// Search for a peer.
   Widget _buildRemoteIDTextField(BuildContext context) {
@@ -327,11 +332,12 @@ class _ConnectionPageState extends State<ConnectionPage>
             Row(
               children: [
                 Expanded(
-                    child: Autocomplete<Peer>(
+                    child: RawAutocomplete<Peer>(
                   optionsBuilder: (TextEditingValue textEditingValue) {
                     if (textEditingValue.text == '') {
-                      return const Iterable<Peer>.empty();
-                    } else if (peers.isEmpty && !isPeersLoaded) {
+                      _autocompleteOpts = const Iterable<Peer>.empty();
+                    } else if (allPeersLoader.peers.isEmpty &&
+                        !allPeersLoader.isLoaded) {
                       Peer emptyPeer = Peer(
                         id: '',
                         username: '',
@@ -345,8 +351,9 @@ class _ConnectionPageState extends State<ConnectionPage>
                         rdpPort: '',
                         rdpUsername: '',
                         loginName: '',
+                        device_group_name: '',
                       );
-                      return [emptyPeer];
+                      _autocompleteOpts = [emptyPeer];
                     } else {
                       String textWithoutSpaces =
                           textEditingValue.text.replaceAll(" ", "");
@@ -357,8 +364,7 @@ class _ConnectionPageState extends State<ConnectionPage>
                         );
                       }
                       String textToFind = textEditingValue.text.toLowerCase();
-
-                      return peers
+                      _autocompleteOpts = allPeersLoader.peers
                           .where((peer) =>
                               peer.id.toLowerCase().contains(textToFind) ||
                               peer.username
@@ -370,7 +376,10 @@ class _ConnectionPageState extends State<ConnectionPage>
                               peer.alias.toLowerCase().contains(textToFind))
                           .toList();
                     }
+                    return _autocompleteOpts;
                   },
+                  focusNode: _idFocusNode,
+                  textEditingController: _idEditingController,
                   fieldViewBuilder: (
                     BuildContext context,
                     TextEditingController fieldTextEditingController,
@@ -379,17 +388,17 @@ class _ConnectionPageState extends State<ConnectionPage>
                   ) {
                     fieldTextEditingController.text = _idController.text;
                     Get.put<TextEditingController>(fieldTextEditingController);
-                    fieldFocusNode.addListener(() async {
-                      _idInputFocused.value = fieldFocusNode.hasFocus;
-                      if (fieldFocusNode.hasFocus && !isPeersLoading) {
-                        _fetchPeers();
-                      }
-                    });
-                    final textLength =
-                        fieldTextEditingController.value.text.length;
-                    // select all to facilitate removing text, just following the behavior of address input of chrome
-                    fieldTextEditingController.selection =
-                        TextSelection(baseOffset: 0, extentOffset: textLength);
+
+                    // The listener will be added multiple times when the widget is rebuilt.
+                    // We may need to use the `RawAutocomplete` to get the focus node.
+
+                    // Temporarily remove Selection because Selection can cause users to accidentally delete previously entered content during input.
+                    // final textLength =
+                    //     fieldTextEditingController.value.text.length;
+                    // // Select all to facilitate removing text, just following the behavior of address input of chrome.
+                    // fieldTextEditingController.selection =
+                    //     TextSelection(baseOffset: 0, extentOffset: textLength);
+
                     return Obx(() => TextField(
                           autocorrect: false,
                           enableSuggestions: false,
@@ -419,7 +428,7 @@ class _ConnectionPageState extends State<ConnectionPage>
                           onSubmitted: (_) {
                             onConnect();
                           },
-                        ));
+                        ).workaroundFreezeLinuxMint());
                   },
                   onSelected: (option) {
                     setState(() {
@@ -430,6 +439,7 @@ class _ConnectionPageState extends State<ConnectionPage>
                   optionsViewBuilder: (BuildContext context,
                       AutocompleteOnSelected<Peer> onSelected,
                       Iterable<Peer> options) {
+                    options = _autocompleteOpts;
                     double maxHeight = options.length * 50;
                     if (options.length == 1) {
                       maxHeight = 52;
@@ -461,7 +471,8 @@ class _ConnectionPageState extends State<ConnectionPage>
                                     maxHeight: maxHeight,
                                     maxWidth: 319,
                                   ),
-                                  child: peers.isEmpty && isPeersLoading
+                                  child: allPeersLoader.peers.isEmpty &&
+                                          !allPeersLoader.isLoaded
                                       ? Container(
                                           height: 80,
                                           child: Center(

@@ -1,16 +1,13 @@
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::keyboard::input_source::{change_input_source, get_cur_session_input_source};
 use crate::{
     client::file_trait::FileManager,
-    common::make_fd_to_json,
+    common::{make_fd_to_json, make_vec_fd_to_json},
     flutter::{
         self, session_add, session_add_existed, session_start_, sessions, try_sync_peer_option,
     },
     input::*,
     ui_interface::{self, *},
-};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use crate::{
-    common::get_default_sound_input,
-    keyboard::input_source::{change_input_source, get_cur_session_input_source},
 };
 use flutter_rust_bridge::{StreamSink, SyncReturn};
 #[cfg(feature = "plugin_framework")]
@@ -121,6 +118,7 @@ pub fn session_add_sync(
     force_relay: bool,
     password: String,
     is_shared_password: bool,
+    conn_token: Option<String>,
 ) -> SyncReturn<String> {
     if let Err(e) = session_add(
         &session_id,
@@ -132,6 +130,7 @@ pub fn session_add_sync(
         force_relay,
         password,
         is_shared_password,
+        conn_token,
     ) {
         SyncReturn(format!("Failed to add session with id {}, {}", &id, e))
     } else {
@@ -222,6 +221,10 @@ pub fn session_get_enable_trusted_devices(session_id: SessionID) -> SyncReturn<b
 
 pub fn session_close(session_id: SessionID) {
     if let Some(session) = sessions::remove_session_by_session_id(&session_id) {
+        // `release_remote_keys` is not required for mobile platforms in common cases.
+        // But we still call it to make the code more stable.
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        crate::keyboard::release_remote_keys("map");
         session.close_event_stream(session_id);
         session.close();
     }
@@ -241,21 +244,17 @@ pub fn session_is_multi_ui_session(session_id: SessionID) -> SyncReturn<bool> {
     }
 }
 
-pub fn session_record_screen(
-    session_id: SessionID,
-    start: bool,
-    display: usize,
-    width: usize,
-    height: usize,
-) {
+pub fn session_record_screen(session_id: SessionID, start: bool) {
     if let Some(session) = sessions::get_session_by_session_id(&session_id) {
-        session.record_screen(start, display as _, width as _, height as _);
+        session.record_screen(start);
     }
 }
 
-pub fn session_record_status(session_id: SessionID, status: bool) {
+pub fn session_get_is_recording(session_id: SessionID) -> SyncReturn<bool> {
     if let Some(session) = sessions::get_session_by_session_id(&session_id) {
-        session.record_status(status);
+        SyncReturn(session.is_recording())
+    } else {
+        SyncReturn(false)
     }
 }
 
@@ -272,9 +271,15 @@ pub fn session_toggle_option(session_id: SessionID, value: String) {
         session.toggle_option(value.clone());
         try_sync_peer_option(&session, &session_id, &value, None);
     }
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     if sessions::get_session_by_session_id(&session_id).is_some() && value == "disable-clipboard" {
         crate::flutter::update_text_clipboard_required();
+    }
+    #[cfg(feature = "unix-file-copy-paste")]
+    if sessions::get_session_by_session_id(&session_id).is_some()
+        && value == config::keys::OPTION_ENABLE_FILE_COPY_PASTE
+    {
+        crate::flutter::update_file_clipboard_required();
     }
 }
 
@@ -680,6 +685,27 @@ pub fn session_read_local_dir_sync(
     "".to_string()
 }
 
+pub fn session_read_local_empty_dirs_recursive_sync(
+    _session_id: SessionID,
+    path: String,
+    include_hidden: bool,
+) -> String {
+    if let Ok(fds) = fs::get_empty_dirs_recursive(&path, include_hidden) {
+        return make_vec_fd_to_json(&fds);
+    }
+    "".to_string()
+}
+
+pub fn session_read_remote_empty_dirs_recursive_sync(
+    session_id: SessionID,
+    path: String,
+    include_hidden: bool,
+) {
+    if let Some(session) = sessions::get_session_by_session_id(&session_id) {
+        session.read_empty_dirs(path, include_hidden);
+    }
+}
+
 pub fn session_get_platform(session_id: SessionID, is_remote: bool) -> String {
     if let Some(session) = sessions::get_session_by_session_id(&session_id) {
         return session.get_platform(is_remote);
@@ -772,13 +798,6 @@ pub fn main_get_sound_inputs() -> Vec<String> {
     vec![String::from("")]
 }
 
-pub fn main_get_default_sound_input() -> Option<String> {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    return get_default_sound_input();
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    None
-}
-
 pub fn main_get_login_device_info() -> SyncReturn<String> {
     SyncReturn(get_login_device_info_json())
 }
@@ -818,11 +837,19 @@ pub fn main_show_option(_key: String) -> SyncReturn<bool> {
 pub fn main_set_option(key: String, value: String) {
     #[cfg(target_os = "android")]
     if key.eq(config::keys::OPTION_ENABLE_KEYBOARD) {
-        crate::ui_cm_interface::notify_input_control(config::option2bool(
-            config::keys::OPTION_ENABLE_KEYBOARD,
-            &value,
-        ));
+        crate::ui_cm_interface::switch_permission_all(
+            "keyboard".to_owned(),
+            config::option2bool(&key, &value),
+        );
     }
+    #[cfg(target_os = "android")]
+    if key.eq(config::keys::OPTION_ENABLE_CLIPBOARD) {
+        crate::ui_cm_interface::switch_permission_all(
+            "clipboard".to_owned(),
+            config::option2bool(&key, &value),
+        );
+    }
+
     if key.eq("custom-rendezvous-server") {
         set_option(key, value.clone());
         #[cfg(target_os = "android")]
@@ -1074,44 +1101,99 @@ pub fn main_peer_exists(id: String) -> bool {
     peer_exists(&id)
 }
 
+fn load_recent_peers(
+    vec_id_modified_time_path: &Vec<(String, SystemTime, std::path::PathBuf)>,
+    to_end: bool,
+    all_peers: &mut Vec<HashMap<&str, String>>,
+    from: usize,
+) -> usize {
+    let to = if to_end {
+        Some(vec_id_modified_time_path.len())
+    } else {
+        None
+    };
+    let mut peers_next = PeerConfig::batch_peers(vec_id_modified_time_path, from, to);
+    // There may be less peers than the batch size.
+    // But no need to consider this case, because it is a rare case.
+    let peers = peers_next.0.drain(..).map(|(id, _, p)| peer_to_map(id, p));
+    all_peers.extend(peers);
+    peers_next.1
+}
+
 pub fn main_load_recent_peers() {
     if !config::APP_DIR.read().unwrap().is_empty() {
-        let peers: Vec<HashMap<&str, String>> = PeerConfig::peers(None)
-            .drain(..)
-            .map(|(id, _, p)| peer_to_map(id, p))
-            .collect();
+        let vec_id_modified_time_path = PeerConfig::get_vec_id_modified_time_path(&None);
+        if vec_id_modified_time_path.is_empty() {
+            return;
+        }
 
-        let data = HashMap::from([
-            ("name", "load_recent_peers".to_owned()),
-            (
-                "peers",
-                serde_json::ser::to_string(&peers).unwrap_or("".to_owned()),
-            ),
-        ]);
-        let _res = flutter::push_global_event(
-            flutter::APP_TYPE_MAIN,
-            serde_json::ser::to_string(&data).unwrap_or("".to_owned()),
-        );
+        let push_to_flutter = |peers| {
+            let data = HashMap::from([("name", "load_recent_peers".to_owned()), ("peers", peers)]);
+            let _res = flutter::push_global_event(
+                flutter::APP_TYPE_MAIN,
+                serde_json::ser::to_string(&data).unwrap_or("".to_owned()),
+            );
+        };
+
+        let load_two_times =
+            vec_id_modified_time_path.len() > PeerConfig::BATCH_LOADING_COUNT && cfg!(target_os = "windows");
+        let mut all_peers = vec![];
+        if load_two_times {
+            let next_from = load_recent_peers(&vec_id_modified_time_path, false, &mut all_peers, 0);
+            push_to_flutter(serde_json::ser::to_string(&all_peers).unwrap_or("".to_owned()));
+            let _ = load_recent_peers(&vec_id_modified_time_path, true, &mut all_peers, next_from);
+        } else {
+            let _ = load_recent_peers(&vec_id_modified_time_path, true, &mut all_peers, 0);
+        }
+        push_to_flutter(serde_json::ser::to_string(&all_peers).unwrap_or("".to_owned()));
     }
 }
 
-pub fn main_load_recent_peers_sync() -> SyncReturn<String> {
-    if !config::APP_DIR.read().unwrap().is_empty() {
-        let peers: Vec<HashMap<&str, String>> = PeerConfig::peers(None)
-            .drain(..)
-            .map(|(id, _, p)| peer_to_map(id, p))
+fn get_partial_recent_peers(
+    vec_id_modified_time_path: Vec<(String, SystemTime, std::path::PathBuf)>,
+    count: usize,
+) -> String {
+    let (peers, next_from) = PeerConfig::batch_peers(
+        &vec_id_modified_time_path,
+        0,
+        Some(count.min(vec_id_modified_time_path.len())),
+    );
+    let peer_maps: Vec<_> = peers
+        .into_iter()
+        .map(|(id, _, p)| peer_to_map(id, p))
+        .collect();
+    let mut data = HashMap::from([(
+        "peers",
+        serde_json::ser::to_string(&peer_maps).unwrap_or("[]".to_owned()),
+    )]);
+    if next_from < vec_id_modified_time_path.len() {
+        let ids: Vec<_> = vec_id_modified_time_path[next_from..]
+            .iter()
+            .map(|(id, _, _)| id.clone())
             .collect();
-
-        let data = HashMap::from([
-            ("name", "load_recent_peers".to_owned()),
-            (
-                "peers",
-                serde_json::ser::to_string(&peers).unwrap_or("".to_owned()),
-            ),
-        ]);
-        return SyncReturn(serde_json::ser::to_string(&data).unwrap_or("".to_owned()));
+        data.insert(
+            "ids",
+            serde_json::ser::to_string(&ids).unwrap_or("[]".to_owned()),
+        );
     }
-    SyncReturn("".to_string())
+    return serde_json::ser::to_string(&data).unwrap_or("".to_owned());
+}
+
+pub fn main_get_recent_peers(get_all: bool) -> String {
+    if !config::APP_DIR.read().unwrap().is_empty() {
+        let vec_id_modified_time_path = PeerConfig::get_vec_id_modified_time_path(&None);
+
+        let load_two_times = !get_all
+            && vec_id_modified_time_path.len() > PeerConfig::BATCH_LOADING_COUNT
+            && cfg!(target_os = "windows");
+        let load_count = if load_two_times {
+            PeerConfig::BATCH_LOADING_COUNT
+        } else {
+            vec_id_modified_time_path.len()
+        };
+        return get_partial_recent_peers(vec_id_modified_time_path, load_count);
+    }
+    "".to_string()
 }
 
 pub fn main_load_lan_peers_sync() -> SyncReturn<String> {
@@ -1145,11 +1227,11 @@ pub fn main_load_recent_peers_for_ab(filter: String) -> String {
 pub fn main_load_fav_peers() {
     if !config::APP_DIR.read().unwrap().is_empty() {
         let favs = get_fav();
-        let mut recent = PeerConfig::peers(None);
+        let mut recent = PeerConfig::peers(Some(favs.clone()));
         let mut lan = config::LanPeers::load()
             .peers
             .iter()
-            .filter(|d| recent.iter().all(|r| r.0 != d.id))
+            .filter(|d| favs.contains(&d.id) && recent.iter().all(|r| r.0 != d.id))
             .map(|d| {
                 (
                     d.id.clone(),
@@ -1168,13 +1250,7 @@ pub fn main_load_fav_peers() {
         recent.append(&mut lan);
         let peers: Vec<HashMap<&str, String>> = recent
             .into_iter()
-            .filter_map(|(id, _, p)| {
-                if favs.contains(&id) {
-                    Some(peer_to_map(id, p))
-                } else {
-                    None
-                }
-            })
+            .map(|(id, _, p)| peer_to_map(id, p))
             .collect();
 
         let data = HashMap::from([
@@ -1341,6 +1417,14 @@ pub fn session_close_voice_call(session_id: SessionID) {
     }
 }
 
+pub fn session_get_conn_token(session_id: SessionID) -> SyncReturn<Option<String>> {
+    if let Some(session) = sessions::get_session_by_session_id(&session_id) {
+        SyncReturn(session.get_conn_token())
+    } else {
+        SyncReturn(None)
+    }
+}
+
 pub fn cm_handle_incoming_voice_call(id: i32, accept: bool) {
     crate::ui_cm_interface::handle_incoming_voice_call(id, accept);
 }
@@ -1377,7 +1461,8 @@ pub fn main_get_last_remote_id() -> String {
 }
 
 pub fn main_get_software_update_url() {
-    if get_local_option("enable-check-update".to_string()) != "N" {
+    let opt = get_local_option(config::keys::OPTION_ENABLE_CHECK_UPDATE.to_string());
+    if config::option2bool(config::keys::OPTION_ENABLE_CHECK_UPDATE, &opt) {
         crate::common::check_software_update();
     }
 }
@@ -1918,13 +2003,7 @@ pub fn main_hide_dock() -> SyncReturn<bool> {
 }
 
 pub fn main_has_file_clipboard() -> SyncReturn<bool> {
-    let ret = cfg!(any(
-        target_os = "windows",
-        all(
-            feature = "unix-file-copy-paste",
-            any(target_os = "linux", target_os = "macos")
-        )
-    ));
+    let ret = cfg!(any(target_os = "windows", feature = "unix-file-copy-paste",));
     SyncReturn(ret)
 }
 
@@ -2291,13 +2370,23 @@ pub fn session_request_new_display_init_msgs(session_id: SessionID, display: usi
     }
 }
 
+pub fn main_audio_support_loopback() -> SyncReturn<bool> {
+    #[cfg(target_os = "windows")]
+    let is_surpport = true;
+    #[cfg(feature = "screencapturekit")]
+    let is_surpport = crate::audio_service::is_screen_capture_kit_available();
+    #[cfg(not(any(target_os = "windows", feature = "screencapturekit")))]
+    let is_surpport = false;
+    SyncReturn(is_surpport)
+}
+
 #[cfg(target_os = "android")]
 pub mod server_side {
     use hbb_common::{config, log};
     use jni::{
         errors::{Error as JniError, Result as JniResult},
         objects::{JClass, JObject, JString},
-        sys::jstring,
+        sys::{jboolean, jstring},
         JNIEnv,
     };
 
@@ -2369,5 +2458,13 @@ pub mod server_side {
             "".into()
         };
         return env.new_string(res).unwrap_or_default().into_raw();
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ffi_FFI_isServiceClipboardEnabled(
+        env: JNIEnv,
+        _class: JClass,
+    ) -> jboolean {
+        jboolean::from(crate::server::is_clipboard_service_ok())
     }
 }
